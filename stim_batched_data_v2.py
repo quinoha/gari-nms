@@ -45,7 +45,7 @@ def main(dist,p, itrs, msf, rs,shots, cs, max_errs, priort,ens,poi, num_threads=
     rs = rs
     prt = priort
     cs = cs  # custom schduling
-    et = 1  # early stopping
+    et = 1  # early stoppingh
     poi = poi  # prob= 'w' or itr 'i'
     ens = ens
 

@@ -409,8 +409,8 @@ def det_and_err_encoding(d, matrices, circuit,variant='zurich',noise=None):
     i_hz = np.unique(np.nonzero(hz)[1])
     i_hy = np.intersect1d(i_hx, i_hz)
 
-    i_hx_only = np.setdiff1d(i_hx, i_hy)
-    i_hz_only = np.setdiff1d(i_hz, i_hy)
+    i_hx_only = np.setdiff1d(i_hx, i_hy) # D_X 행렬
+    i_hz_only = np.setdiff1d(i_hz, i_hy) # D_Z 행렬
     i_hy_only = i_hy
 
     hx_red = hx[:, i_hx]
