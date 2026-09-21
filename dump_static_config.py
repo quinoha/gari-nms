@@ -144,8 +144,18 @@ def load_problem(d, p, prt):
     priors_big[2 * (nx + nz):] = matrices.priors[xz.i_hy_only]
 
     llr = np.log((1 - priors_big) / priors_big)
+    llr_ab = np.log((1 - priors_ab) / priors_ab)
+
+    # observables restricted to the Z block, the slice of a correction the
+    # decoder's logical error check actually consumes
+    obs = matrices.observables_matrix.toarray().astype(np.int8)
+    l_dz = obs[:, xz.i_hz_only]
+
     return dict(code=code, Hrows=Hrows, Hcols=Hcols, llr=llr,
-                hshape0=h.shape[0], dxshape0=mx, nx=nx, nz=nz)
+                hshape0=h.shape[0], dxshape0=mx, nx=nx, nz=nz,
+                dem=dem, det_index=xz.det_index, mx=mx, m=h.shape[0],
+                l_dz=l_dz, big_rows=Hrows.shape[0],
+                llr_ab=llr_ab, dz=xz.dz)
 
 
 # --- main -----------------------------------------------------------------
