@@ -8,6 +8,8 @@
 #include <omp.h>
 #endif
 
+#include "hbp_trace.h"
+
 // Phase 3 NUMA Awareness: Add NUMA-related headers
 #ifdef _GNU_SOURCE
 #include <sched.h>
@@ -104,7 +106,8 @@ int ldpc_dec_msaa_quantum_serial_big_matrix_c(
     int random_order, int hshape0, int dxshape0,
     int custom_random_schedule_HBP,
     int early_stopping,
-    int8_t* Hdec_out, double* lambda_out
+    int8_t* Hdec_out, double* lambda_out,
+    HbpTrace* trace
 ) {
     // Initialize variables
     //int i, j, ;
@@ -143,6 +146,14 @@ int ldpc_dec_msaa_quantum_serial_big_matrix_c(
 //    #pragma GCC ivdep
     for (int i = 0; i < N; ++i) {
         lambda[i] = clip(lambda[i], -10000.0, 10000.0);
+    }
+
+    // Hook 1: state the RTL must hold coming out of reset.
+    if (trace) {
+        trace->nvars      = N;
+        trace->rows       = Hrows_r;
+        trace->row_stride = Hrows_c;
+        if (trace->flags & HBP_TR_INIT) hbp_tr_init(trace, lambda, N);
     }
 
     int* row_indices = malloc(Hrows_r * sizeof(int));
@@ -235,6 +246,10 @@ int ldpc_dec_msaa_quantum_serial_big_matrix_c(
         }
 //        for(int k = 0; k < Hrows_r; k++) printf("%d ", row_indices[k]);
 
+        // Hook 2: the order rows are visited in, which the RTL must match.
+        if (hbp_tr_on(trace, HBP_TR_ORDER, loop))
+            hbp_tr_order(trace, loop, row_indices, Hrows_r);
+
         // Process each row in row_indices
 ////        #pragma GCC ivdep
         for (int irHR_idx = 0; irHR_idx < Hrows_r; ++irHR_idx) {
@@ -301,10 +316,19 @@ int ldpc_dec_msaa_quantum_serial_big_matrix_c(
                 lambda[idx] += etar[irHR * Hrows_c + icHR];
                 Hdec[idx] = lambda[idx] < 0 ? 1 : 0;
             }
+
+            // Hook 3: this row's slice, right after the row was processed.
+            if (hbp_tr_on(trace, HBP_TR_ROW, loop))
+                hbp_tr_row(trace, loop, lambda, Hrows + irHR * Hrows_c,
+                           etar + irHR * Hrows_c, Hrows_c);
         }
 
         // Copy updated etar values
         memcpy(etar_old, etar, Hrows_r * Hrows_c * sizeof(double));
+
+        // Hook 4: whole decoder state at the iteration boundary.
+        if (hbp_tr_on(trace, HBP_TR_ITER, loop))
+            hbp_tr_iter(trace, loop, lambda, N, etar, Hrows_r * Hrows_c);
 
         // Check parity
         int parity_t = 0;
@@ -351,6 +375,10 @@ int ldpc_dec_msaa_quantum_serial_big_matrix_c(
         free(sign_t_vec);
         free(parity_t_vec);
 
+        // Hook 5: failing checks and whether this iteration ends the loop.
+        if (hbp_tr_on(trace, HBP_TR_PARITY, loop))
+            hbp_tr_parity(trace, loop, parity_t, parity_t == 0);
+
         // Terminate if parity check passes
         if (parity_t == 0) break;
     }
@@ -358,6 +386,12 @@ int ldpc_dec_msaa_quantum_serial_big_matrix_c(
     // Transfer results out
     memcpy(Hdec_out, Hdec, N * sizeof(int8_t));
     memcpy(lambda_out, lambda, N * sizeof(double));
+
+    if (trace) {
+        int traced = (trace->max_iters > 0 && loop > trace->max_iters)
+                     ? trace->max_iters : loop;
+        hbp_tr_finish(trace, traced, loop);
+    }
 
 //    free(alpha_arr);
     free(row_indices);
@@ -552,7 +586,8 @@ void ldpc_dec_msaa_quantum_serial_big_matrix_c_ensemble_batched_ler(
                 hshape0, dxshape0,
                 custom_random_schedule_HBP,
                 early_stopping,
-                pred_err_sr_shot_ens, lambda_out_thread
+                pred_err_sr_shot_ens, lambda_out_thread,
+                NULL  // tracing is single-shot only, never inside the OpenMP path
             );
         }
 ////        printf("DEBUG: parallel loop ens end\n");

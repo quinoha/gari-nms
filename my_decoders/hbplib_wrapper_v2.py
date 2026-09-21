@@ -1,8 +1,22 @@
 import ctypes
+import os
 import numpy as np
 
 # Cargar biblioteca compartida
 lib = ctypes.CDLL('my_decoders/hbplib_v2.so')
+
+# Trace hook selection bits, mirroring my_decoders/hbp_trace.h
+HBP_TR_INIT = 1 << 0    # hook 1: lambda straight after initialisation
+HBP_TR_ORDER = 1 << 1   # hook 2: row_indices once the schedule is fixed
+HBP_TR_ROW = 1 << 2     # hook 3: per-row lambda / etar slice
+HBP_TR_ITER = 1 << 3    # hook 4: end-of-iteration lambda / etar snapshot
+HBP_TR_PARITY = 1 << 4  # hook 5: parity count and early-stop decision
+HBP_TR_ALL = 0x1f
+
+lib.hbp_trace_create.argtypes = [ctypes.c_char_p, ctypes.c_uint32, ctypes.c_int, ctypes.c_int]
+lib.hbp_trace_create.restype = ctypes.c_void_p
+lib.hbp_trace_destroy.argtypes = [ctypes.c_void_p]
+lib.hbp_trace_destroy.restype = None
 
 # Signature of the method
 lib.ldpc_dec_msaa_quantum_serial_big_matrix_c.argtypes = [
@@ -12,7 +26,8 @@ lib.ldpc_dec_msaa_quantum_serial_big_matrix_c.argtypes = [
     ctypes.c_double, ctypes.POINTER(ctypes.c_int8),
     ctypes.c_int, ctypes.c_int, ctypes.c_int,
     ctypes.c_int, ctypes.c_int,
-    ctypes.POINTER(ctypes.c_int8), ctypes.POINTER(ctypes.c_double)
+    ctypes.POINTER(ctypes.c_int8), ctypes.POINTER(ctypes.c_double),
+    ctypes.c_void_p  # HbpTrace*, NULL when not tracing
 ]
 lib.ldpc_dec_msaa_quantum_serial_big_matrix_c.restype = ctypes.c_int
 
@@ -23,8 +38,17 @@ def ldpc_dec_msaa_quantum_serial_big_matrix_c(
     alpha, Syn_x,
     random_order, hshape, dxshape,
     custom_random_schedule_HBP=0,
-    early_stopping=False
+    early_stopping=False,
+    trace_dir=None, trace_flags=HBP_TR_ALL, trace_shot=0, trace_max_iters=0
 ):
+    """Decode one shot.
+
+    Passing trace_dir turns on the observation hooks and writes the golden
+    vectors for that shot into that directory, which is created if needed.
+    trace_flags selects which of the five hooks run, and trace_max_iters caps
+    how many iterations get traced (0 means all of them). The hooks only
+    observe, so the returned values are identical either way.
+    """
     # Convertir a tipos C
     llr = np.ascontiguousarray(llr, dtype=np.float64)
     Hrows = np.ascontiguousarray(Hrows, dtype=np.int32)
@@ -37,22 +61,34 @@ def ldpc_dec_msaa_quantum_serial_big_matrix_c(
     # Hdec_out = (ctypes.c_int8 * ((Nloop + 1) * N))()
     lambda_out = np.zeros(N, dtype=np.float64)
 
-    iters = lib.ldpc_dec_msaa_quantum_serial_big_matrix_c(
-        # double* llr, int Nloop,
-        llr.ctypes.data_as(ctypes.POINTER(ctypes.c_double)), ctypes.c_int(Nloop),
-        # int* Hrows, int Hrows_r, int Hrows_c,
-        Hrows.ctypes.data_as(ctypes.POINTER(ctypes.c_int)), ctypes.c_int(Hrows.shape[0]), ctypes.c_int(Hrows.shape[1]),
-        # int* Hcols, int Hcols_r, int Hcols_c,
-        Hcols.ctypes.data_as(ctypes.POINTER(ctypes.c_int)), ctypes.c_int(Hcols.shape[0]), ctypes.c_int(Hcols.shape[1]),
-        # double alpha, int8_t* Syn_x,
-        ctypes.c_double(alpha), Syn_x.ctypes.data_as(ctypes.POINTER(ctypes.c_int8)),
-        # int random_order, int hshape0, int dxshape0,
-        ctypes.c_int(random_order), ctypes.c_int(hshape[0]), ctypes.c_int(dxshape[0]),
-        # int custom_random_schedule_HBP, int early_stopping,
-        ctypes.c_int(custom_random_schedule_HBP), ctypes.c_int(early_stopping),
-        Hdec_out.ctypes.data_as(ctypes.POINTER(ctypes.c_int8)),
-        lambda_out.ctypes.data_as(ctypes.POINTER(ctypes.c_double))
-    )
+    trace = None
+    if trace_dir is not None:
+        os.makedirs(trace_dir, exist_ok=True)
+        trace = lib.hbp_trace_create(trace_dir.encode(), trace_flags,
+                                     trace_shot, trace_max_iters)
+
+    try:
+        iters = lib.ldpc_dec_msaa_quantum_serial_big_matrix_c(
+            # double* llr, int Nloop,
+            llr.ctypes.data_as(ctypes.POINTER(ctypes.c_double)), ctypes.c_int(Nloop),
+            # int* Hrows, int Hrows_r, int Hrows_c,
+            Hrows.ctypes.data_as(ctypes.POINTER(ctypes.c_int)), ctypes.c_int(Hrows.shape[0]), ctypes.c_int(Hrows.shape[1]),
+            # int* Hcols, int Hcols_r, int Hcols_c,
+            Hcols.ctypes.data_as(ctypes.POINTER(ctypes.c_int)), ctypes.c_int(Hcols.shape[0]), ctypes.c_int(Hcols.shape[1]),
+            # double alpha, int8_t* Syn_x,
+            ctypes.c_double(alpha), Syn_x.ctypes.data_as(ctypes.POINTER(ctypes.c_int8)),
+            # int random_order, int hshape0, int dxshape0,
+            ctypes.c_int(random_order), ctypes.c_int(hshape[0]), ctypes.c_int(dxshape[0]),
+            # int custom_random_schedule_HBP, int early_stopping,
+            ctypes.c_int(custom_random_schedule_HBP), ctypes.c_int(early_stopping),
+            Hdec_out.ctypes.data_as(ctypes.POINTER(ctypes.c_int8)),
+            lambda_out.ctypes.data_as(ctypes.POINTER(ctypes.c_double)),
+            trace
+        )
+    finally:
+        if trace is not None:
+            lib.hbp_trace_destroy(trace)
+
     if iters > Nloop:
         iters = Nloop
 
