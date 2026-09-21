@@ -33,7 +33,7 @@ SOURCE = hbp_decoder_v2.c
 all: $(TARGET)
 
 # Build the original shared library with OpenMP support
-$(TARGET): $(SOURCE)
+$(TARGET): $(SOURCE) hbp_trace.h
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $<
 
 
